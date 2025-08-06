@@ -23,8 +23,7 @@
         {compile, {cargo, build}}
     ]},
     {post, [
-        {clean, {cargo, clean}},
-        {eunit, {cargo, test}}
+        {clean, {cargo, clean}}
     ]}
 ]}.
 ```
@@ -32,7 +31,6 @@
 这个配置会：
 - 在编译前自动构建 Rust crates
 - 在清理后清理 Rust 构建产物
-- 在运行 eunit 测试后运行 Rust 测试
 
 ### 高级配置选项
 
@@ -48,7 +46,7 @@
 ]}.
 ```
 
-**注意：** `release` 和 `debug` 选项互斥。如果都不指定，插件会根据 rebar3 的 profile 自动选择（`prod` profile 使用 release 模式）。
+**注意：** `release` 和 `debug` 选项互斥。如果都不指定，插件会根据 rebar3 的 profile 自动选择（`prod` profile 使用 release 模式）。你可以使用 `{debug, true}` 来强制使用 debug 模式。
 
 ## 项目结构
 
@@ -82,6 +80,7 @@ members = [
     "rust_src/my_nif",
     "rust_src/my_port"
 ]
+resolver = "3"
 ```
 
 ## 开发 NIF (Native Implemented Functions)
@@ -101,7 +100,7 @@ name = "my_nif"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustler = "0.29"
+rustler = "0.36"
 ```
 
 在 `src/lib.rs` 中实现 NIF 函数：
@@ -161,7 +160,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-byteorder = "1.4"
+byteorder = "1.5"
 ```
 
 在 `src/main.rs` 中实现 Port 程序：
@@ -170,11 +169,16 @@ byteorder = "1.4"
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{stdin, stdout, Read, Write};
 
-fn read_cmd() -> std::io::Result<Vec<u8>> {
-    let len = stdin().read_u16::<BigEndian>()? as usize;
+fn read_cmd() -> std::io::Result<Option<Vec<u8>>> {
+    let len = match stdin().read_u16::<BigEndian>() {
+        Ok(len) => len as usize,
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    
     let mut buf = vec![0u8; len];
     stdin().read_exact(&mut buf)?;
-    Ok(buf)
+    Ok(Some(buf))
 }
 
 fn write_cmd(data: &[u8]) -> std::io::Result<()> {
@@ -185,19 +189,23 @@ fn write_cmd(data: &[u8]) -> std::io::Result<()> {
 
 fn main() -> std::io::Result<()> {
     loop {
-        let cmd = read_cmd()?;
-        match cmd[0] {
-            1 => {
-                // 处理命令 1
-                let result = cmd[1] + 1;
-                write_cmd(&[result])?;
+        match read_cmd()? {
+            Some(cmd) => {
+                match cmd[0] {
+                    1 => {
+                        // 处理命令 1
+                        let result = cmd[1] + 1;
+                        write_cmd(&[result])?;
+                    },
+                    2 => {
+                        // 处理命令 2
+                        let result = cmd[1] * 2;
+                        write_cmd(&[result])?;
+                    },
+                    _ => break,
+                }
             },
-            2 => {
-                // 处理命令 2
-                let result = cmd[1] * 2;
-                write_cmd(&[result])?;
-            },
-            _ => break,
+            None => break, // EOF reached, exit gracefully
         }
     }
     Ok(())
@@ -278,11 +286,24 @@ rebar3 clean
 ### 运行测试
 
 ```bash
-# 运行 Erlang 和 Rust 测试
+# 运行 Erlang 测试
 rebar3 eunit
 
-# 只运行 Rust 测试
+# 只运行 Rust 测试，这个有点小问题，因为erlang-cargo的cargo test要使用+nightly。建议直接在cargo内部test，避开erlang调用。
 rebar3 cargo test
+```
+
+**注意：** 如果你想在运行 `rebar3 eunit` 时自动运行 Rust 测试，可以在 `rebar.config` 中添加：
+```erlang
+{provider_hooks, [
+    {pre, [
+        {compile, {cargo, build}}
+    ]},
+    {post, [
+        {clean, {cargo, clean}},
+        {eunit, {cargo, test}}
+    ]}
+]}.
 ```
 
 ### 手动 Cargo 操作
@@ -290,6 +311,9 @@ rebar3 cargo test
 ```bash
 # 手动构建 Rust crates
 rebar3 cargo build
+
+# 手动强制构建 release 的 Rust crates
+rebar3 as prod cargo build
 
 # 清理 Rust 构建产物
 rebar3 cargo clean
@@ -334,13 +358,7 @@ rebar3_cargo 支持三种编译模式：
 {cargo_opts, [{src_dir, "rust_src"}]}
 ```
 
-### 跨应用 NIF 加载
 
-如果你需要从不同的应用加载 NIF：
-
-```erlang
-{cargo_opts, [{load_from_app, other_app}]}
-```
 
 ## 测试和调试
 
@@ -358,8 +376,8 @@ my_port_test_() ->
     {setup,
      fun() -> my_port:start() end,
      fun(_) -> my_port:stop() end,
-     [?_assertEqual(13, my_port:foo(12)),
-      ?_assertEqual(24, my_port:bar(12))]}.
+     [?_assertEqual([13], my_port:foo(12)),
+      ?_assertEqual([24], my_port:bar(12))]}.
 ```
 
 ### 调试技巧
@@ -393,8 +411,7 @@ A: 检查以下几点：
 - 确保 Port 程序能正确处理 packet 协议
 
 ### Q: 跨平台编译问题
-A: rebar3_cargo 目前主要在 Linux 上测试。对于其他平台：
-- Windows：可能需要额外配置
+A: rebar3_cargo 目前主要在 Linux和Windows 上测试。对于其他平台：
 - macOS：通常工作良好
 - 交叉编译：目前不支持 `--target` 参数
 
