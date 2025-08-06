@@ -147,4 +147,4 @@ rebar3 cargo clean
 
 ## License
 
-This project uses Apache-2.0 and MIT dual licensing.
+This project uses MIT licensing.
