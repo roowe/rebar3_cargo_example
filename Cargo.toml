@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "rust_src/my_nif",
+    "rust_src/my_port"
+]
+resolver = "3"

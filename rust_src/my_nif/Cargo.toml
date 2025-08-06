@@ -1,0 +1,11 @@
+[package]
+name = "my_nif"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "my_nif"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.36.2"
